@@ -4,7 +4,9 @@ PyJWT==2.9.0
 Werkzeug==3.0.4
 requests==2.32.3
 beautifulsoup4==4.12.3
+
 playwright==1.46.0
-greenlet==2.2.0
+greenlet==3.0.3
+
 urllib3==2.2.3
 certifi==2024.8.30
