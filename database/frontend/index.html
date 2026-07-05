@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>رصيف — لوحة التحكم الحقيقية</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@700;900&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{ --ink:#0E1A20; --panel:#152329; --line:#2A3D42; --gold:#C6992E; --teal:#4E9788; --sand:#EDE7DC; --muted:#8FA3A8; --success:#5B9074; --risk:#B5533C; }
+  *{box-sizing:border-box;} body{background:var(--ink); color:var(--sand); font-family:'IBM Plex Sans Arabic',sans-serif; margin:0;}
+  h1{font-family:'Cairo',sans-serif;}
+  header{padding:20px 5vw; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;}
+  main{padding:24px 5vw 60px; max-width:1300px; margin:0 auto;}
+  .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px;}
+  input,select,button,textarea{font-family:inherit; font-size:13px; background:var(--panel); color:var(--sand); border:1px solid var(--line); padding:9px 12px; border-radius:2px;}
+  button{cursor:pointer; background:var(--gold); color:var(--ink); font-weight:700; border:none;}
+  button.ghost{background:transparent; color:var(--sand); border:1px solid var(--line);}
+  .status-bar{font-size:12.5px; color:var(--muted); display:flex; gap:18px; flex-wrap:wrap; margin-bottom:20px;}
+  .status-bar b{color:var(--gold);}
+  .grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; margin-bottom:32px;}
+  .card{background:var(--panel); border:1px solid var(--line); padding:16px; font-size:13px;}
+  .card h3{font-family:'Cairo',sans-serif; font-size:14.5px; margin:0 0 8px;}
+  .badge{display:inline-block; padding:3px 8px; font-size:11px; border:1px solid var(--gold); color:var(--gold); margin-inline-end:6px;}
+  .rec-YES{color:var(--success);} .rec-MAYBE{color:var(--gold);} .rec-NO{color:var(--risk);}
+  #map{height:400px; border:1px solid var(--line); margin-bottom:32px;}
+  #login-panel{max-width:360px; display:flex; flex-direction:column; gap:8px;}
+  a.export-link{color:var(--teal); font-size:12.5px; text-decoration:none;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 style="margin:0;">رصيف <span style="color:var(--muted); font-size:14px; font-weight:400;">— Raseef API</span></h1>
+  <div class="status-bar" id="status-bar">جاري تحميل حالة السحب...</div>
+</header>
+
+<main>
+
+  <div id="login-panel">
+    <p style="font-size:12.5px;color:var(--muted);">سجّل دخول لتفعيل تشغيل السحب اليدوي وإنشاء ملفات المناقصة (اختياري لتصفح المشاريع)</p>
+    <input id="login-user" placeholder="اسم المستخدم">
+    <input id="login-pass" type="password" placeholder="كلمة المرور">
+    <div class="row">
+      <button onclick="login()">تسجيل الدخول</button>
+      <button class="ghost" onclick="register()">إنشاء حساب</button>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:24px;">
+    <button onclick="runScrape()">🔄 تحديث البيانات الآن</button>
+    <input id="search-box" placeholder="بحث نصي كامل...">
+    <select id="sector-filter"><option value="">كل القطاعات</option></select>
+    <select id="sort-by">
+      <option value="win_score">ترتيب حسب فرصة الفوز</option>
+      <option value="profit_score">ترتيب حسب الربح</option>
+      <option value="risk_score">ترتيب حسب المخاطرة</option>
+    </select>
+    <label style="font-size:13px;"><input type="checkbox" id="high-only"> فرص عالية فقط</label>
+    <button class="ghost" onclick="loadProjects()">تطبيق</button>
+    <a class="export-link" href="#" onclick="exportCsv(); return false;">⬇ تصدير CSV لكل المشاريع</a>
+  </div>
+
+  <div id="map"></div>
+
+  <div class="grid" id="project-grid"></div>
+
+</main>
+
+<script>
+const API_BASE = "http://localhost:5000/api";
+let token = localStorage.getItem("raseef_token") || null;
+let map, markersLayer;
+
+async function login(){
+  const res = await fetch(`${API_BASE}/login`, {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({username: document.getElementById('login-user').value, password: document.getElementById('login-pass').value})});
+  const data = await res.json();
+  if(data.token){ token = data.token; localStorage.setItem("raseef_token", token); alert("تم تسجيل الدخول"); }
+  else alert(data.error || "فشل تسجيل الدخول");
+}
+
+async function register(){
+  const res = await fetch(`${API_BASE}/register`, {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({username: document.getElementById('login-user').value, password: document.getElementById('login-pass').value})});
+  const data = await res.json();
+  alert(data.message || data.error);
+}
+
+async function runScrape(){
+  if(!token){ alert("سجّل الدخول أولاً لتشغيل السحب"); return; }
+  const res = await fetch(`${API_BASE}/scrape/run`, {method:"POST", headers:{"Authorization":"Bearer "+token}});
+  const data = await res.json();
+  alert(data.message || data.error);
+  loadStatus(); loadProjects();
+}
+
+async function loadStatus(){
+  const res = await fetch(`${API_BASE}/scrape/status`);
+  const data = await res.json();
+  const last = data.logs[0];
+  document.getElementById('status-bar').innerHTML =
+    `آخر سحب: <b>${last ? last.run_at : 'لم يُشغَّل بعد'}</b> · مشاريع جديدة اليوم: <b>${data.new_today}</b>`;
+}
+
+async function loadProjects(){
+  const params = new URLSearchParams();
+  const sector = document.getElementById('sector-filter').value;
+  const search = document.getElementById('search-box').value;
+  const sortBy = document.getElementById('sort-by').value;
+  const highOnly = document.getElementById('high-only').checked;
+  if(sector) params.set('sector', sector);
+  if(search) params.set('search', search);
+  if(highOnly) params.set('high_only', 'true');
+  params.set('sort_by', sortBy);
+
+  const res = await fetch(`${API_BASE}/projects?` + params.toString());
+  const projects = await res.json();
+  renderProjects(projects);
+  renderMap(projects);
+  populateSectors(projects);
+}
+
+function populateSectors(projects){
+  const sel = document.getElementById('sector-filter');
+  const current = sel.value;
+  const sectors = [...new Set(projects.map(p=>p.sector).filter(Boolean))];
+  sel.innerHTML = '<option value="">كل القطاعات</option>' + sectors.map(s=>`<option value="${s}">${s}</option>`).join('');
+  sel.value = current;
+}
+
+function renderProjects(projects){
+  document.getElementById('project-grid').innerHTML = projects.map(p => `
+    <div class="card">
+      <h3>${p.title}</h3>
+      <div><span class="badge">${p.sector || 'غير مصنّف'}</span><span class="badge">${p.governorate || '—'}</span></div>
+      <p>الجهة: ${p.source || '—'} · القيمة: $${(p.value||0).toLocaleString('en-US')}</p>
+      <p>فرصة الفوز: ${p.win_score}% · المخاطرة: ${p.risk_score}% · الربح: ${p.profit_score}%</p>
+      <p class="rec-${p.recommendation}">التوصية: ${p.recommendation === 'YES' ? '✅ ادخل المشروع' : p.recommendation === 'MAYBE' ? '⚠️ ادخل بحذر' : '❌ لا يُنصح'}</p>
+      <a class="export-link" href="${p.source_url}" target="_blank">🔗 المصدر الأصلي</a>
+      <div style="margin-top:8px;"><a class="export-link" href="#" onclick="exportTxt(${p.id}); return false;">⬇ ملف مناقصة (txt)</a></div>
+    </div>
+  `).join('') || '<p style="color:var(--muted);">لا توجد مشاريع بعد — اضغط "تحديث البيانات الآن" بعد إعداد الـ scraper.</p>';
+}
+
+function renderMap(projects){
+  if(!map){
+    map = L.map('map').setView([34.9, 38.0], 6);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {subdomains:'abcd', maxZoom:19}).addTo(map);
+    markersLayer = L.layerGroup().addTo(map);
+  }
+  markersLayer.clearLayers();
+  projects.forEach(p=>{
+    if(p.lat && p.lng){
+      L.marker([p.lat, p.lng]).addTo(markersLayer).bindPopup(`<b>${p.title}</b><br>فرصة الفوز: ${p.win_score}%`);
+    }
+  });
+}
+
+async function exportCsv(){
+  window.open(`${API_BASE}/export/csv`, '_blank');
+}
+
+async function exportTxt(id){
+  if(!token){ alert("سجّل الدخول أولاً لإنشاء ملف المناقصة"); return; }
+  const res = await fetch(`${API_BASE}/export/txt/${id}`, {headers:{"Authorization":"Bearer "+token}});
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'proposal.txt';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+loadStatus();
+loadProjects();
+</script>
+
+</body>
+</html>
